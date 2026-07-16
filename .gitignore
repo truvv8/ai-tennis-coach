@@ -1,0 +1,11 @@
+__pycache__/
+*.pyc
+
+# model weights and engines (downloaded/built on the Jetson)
+*.pth
+human_pose.json
+
+# recordings and logs
+*.mp4
+*.avi
+*.csv
