@@ -1,82 +1,57 @@
-# 🎾 AI Tennis Coach
+# ai-tennis-coach
 
-**Real-time tennis technique analysis on a $99 Jetson Nano.** Point a camera at the court, get instant feedback on your form — no cloud, no subscription, all inference runs on-device.
+Tennis stroke analysis on a Jetson Nano. You put a camera on the side of the court, it tracks your skeleton with [trt_pose](https://github.com/NVIDIA-AI-IOT/trt_pose), computes joint angles every frame and overlays feedback on the video when your form is off (elbow collapsed at contact, legs too straight, that kind of thing). Everything runs on the Nano itself, nothing goes to the cloud.
 
-[Русская версия / Russian version](README.ru.md)
+There's a small MJPEG server built in, so you can run the whole thing headless over ssh and just open `http://<jetson-ip>:8080` in a browser to watch the annotated stream.
 
-```
-camera ──▶ trt_pose (TensorRT, ~20 FPS) ──▶ joint angles ──▶ live feedback
-                                                │
-                                                └──▶ browser stream + CSV log
-```
+[Гайд по установке на русском](README.ru.md)
 
-## What it does
+## Running it
 
-- **Skeleton tracking** of the player using [trt_pose](https://github.com/NVIDIA-AI-IOT/trt_pose), NVIDIA's pose model optimized for Jetson (ResNet18 + TensorRT FP16)
-- **Joint angles every frame**: hitting-arm elbow and shoulder, front knee, hip, shoulder-line tilt
-- **Rule-based form feedback** rendered on the video ("Elbow too bent — extend through contact")
-- **Headless-friendly**: built-in zero-dependency MJPEG server — watch the annotated stream in any browser while the Jetson runs over SSH
-- **Swing analysis offline**: run on a recorded clip, log angles + wrist speed to CSV, find the contact point by the wrist-speed peak
-
-## Hardware
-
-| Part | Notes |
-|---|---|
-| Jetson Nano 4GB | JetPack 4.6.x |
-| Camera | USB webcam or CSI (Raspberry Pi cam) |
-| Placement | Side view, perpendicular to the stroke, waist height, full body in frame |
-
-## Quick start
-
-On the Jetson (PyTorch for Jetson, torch2trt and trt_pose installed — see [setup guide](README.ru.md)):
+You need PyTorch for Jetson (the NVIDIA wheel, not pip), torch2trt and trt_pose installed first — the [russian readme](README.ru.md) has the full walkthrough with commands.
 
 ```bash
 git clone https://github.com/truvv8/ai-tennis-coach
 cd ai-tennis-coach
 
-# get the model
 cp ~/trt_pose/tasks/human_pose/human_pose.json .
-# download resnet18_baseline_att_224x224_A_epoch_249.pth (link in the trt_pose README)
+# also download resnet18_baseline_att_224x224_A_epoch_249.pth,
+# the link is in the trt_pose readme
 
-python3 build_engine.py        # one-time TensorRT conversion, ~5-10 min
+python3 build_engine.py    # converts the model to TensorRT, one time, ~5-10 min
 
-python3 main.py --source 0 --stream 8080     # USB camera
-python3 main.py --source csi --stream 8080   # CSI camera
+python3 main.py --source 0 --stream 8080     # usb camera
+python3 main.py --source csi --stream 8080   # csi camera
 ```
 
-Open `http://<jetson-ip>:8080/` in a browser — live video with skeleton, angles and coaching cues.
-
-Analyze a recorded stroke:
+To analyze a recorded clip instead and dump the angles to csv:
 
 ```bash
 python3 main.py --source forehand.mp4 --csv forehand.csv --stream 0
 ```
 
-## Project layout
+The wrist speed column is useful for finding the contact point — it peaks right around contact.
 
-| File | Purpose |
-|---|---|
-| `main.py` | capture → pose → angles → feedback → stream loop |
-| `pose_estimator.py` | trt_pose wrapper: inference, player selection, skeleton drawing |
-| `angles.py` | joint-angle math, wrist speed |
-| `build_engine.py` | one-time PyTorch → TensorRT conversion |
-| `streamer.py` | dependency-free MJPEG server for headless viewing |
+## Files
 
-## Tuning the feedback
+- `main.py` — the main loop: capture, pose, angles, feedback, stream
+- `pose_estimator.py` — trt_pose wrapper, picks the player out of detected people, draws the skeleton
+- `angles.py` — joint angle math
+- `build_engine.py` — one-time pytorch → tensorrt conversion
+- `streamer.py` — the mjpeg server, no dependencies
 
-The thresholds in `FEEDBACK_RULES` (main.py) are starting points for a side-view forehand. Record a few reference strokes with `--csv`, look at the real angle values at contact, and adjust. Left-handed players: pass `--left-handed`.
+## Camera placement
+
+Side view, roughly perpendicular to the stroke, waist height, whole body in frame at contact. Side view is what makes elbow/knee/shoulder-turn readable — top view is better for ball tracking but useless for form.
+
+## Tuning
+
+The thresholds in `FEEDBACK_RULES` in main.py are rough starting points for a side-view forehand. Record a few of your own good strokes with `--csv`, look at what the angles actually are at contact, and adjust. If you're left-handed, pass `--left-handed`.
 
 ## Limitations
 
-A single 2D camera can't measure depth — racket-face angle and wrist pronation are out of reach; this catches the big form errors (collapsed elbow, no knee bend, late shoulder turn). Stereo or an IMU on the racket would be the next step.
+It's one 2D camera, so no depth — racket face angle and wrist pronation are not measurable. This catches the big form errors, not the subtle ones. Stereo or an IMU on the racket would fix that but that's a different project.
 
-## Roadmap
+Things I want to add: stroke phase detection from the wrist speed profile, DTW comparison against a reference stroke, rule sets for serve and backhand.
 
-- [ ] Stroke phase detection (backswing → contact → follow-through) from the wrist-speed profile
-- [ ] DTW comparison against a reference stroke
-- [ ] Serve and backhand rule sets
-- [ ] Audio cues between points
-
-## License
-
-MIT
+MIT license.
