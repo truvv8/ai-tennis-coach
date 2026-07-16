@@ -6,7 +6,6 @@ and human_pose.json from the trt_pose repo next to this file.
 import json
 import cv2
 import torch
-import numpy as np
 
 import trt_pose.coco
 from trt_pose.parse_objects import ParseObjects
