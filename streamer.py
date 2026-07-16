@@ -1,7 +1,16 @@
 """Tiny dependency-free MJPEG server: lets you watch the annotated video in a
 browser on your laptop while the script runs headless over SSH."""
 import threading
-from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from http.server import BaseHTTPRequestHandler
+
+try:
+    from http.server import ThreadingHTTPServer
+except ImportError:  # python 3.6 on jetpack 4.6
+    import socketserver
+    from http.server import HTTPServer
+
+    class ThreadingHTTPServer(socketserver.ThreadingMixIn, HTTPServer):
+        daemon_threads = True
 
 import cv2
 
