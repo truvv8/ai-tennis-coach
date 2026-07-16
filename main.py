@@ -16,6 +16,7 @@ import cv2
 
 from angles import compute_angles, wrist_speed
 from pose_estimator import PoseEstimator
+from smoothing import KeypointSmoother
 from streamer import MJPEGStreamer
 
 # Rough form checks for a side-view forehand; tune against your own reference clips.
@@ -63,7 +64,9 @@ def main():
     ap.add_argument("--source", default="0", help="'csi', camera index, or video file")
     ap.add_argument("--stream", type=int, default=8080, help="MJPEG port (0 = off)")
     ap.add_argument("--csv", default=None, help="log angles per frame to CSV")
+    ap.add_argument("--record", default=None, help="save annotated video to file")
     ap.add_argument("--left-handed", action="store_true")
+    ap.add_argument("--no-smooth", action="store_true", help="raw keypoints, no EMA")
     ap.add_argument("--model", default="model_trt.pth")
     args = ap.parse_args()
 
@@ -85,6 +88,8 @@ def main():
                              "shoulder_line", "wrist_speed"])
 
     right_handed = not args.left_handed
+    smoother = None if args.no_smooth else KeypointSmoother()
+    writer = None
     prev_kps, prev_t = None, None
     fps, fps_t, fps_n = 0.0, time.time(), 0
 
@@ -99,6 +104,8 @@ def main():
 
             persons = pose.infer(frame)
             player = pose.pick_main_person(persons)
+            if smoother:
+                player = smoother.update(player)
 
             lines = [f"FPS: {fps:.1f}  persons: {len(persons)}"]
             if player:
@@ -129,6 +136,15 @@ def main():
             if streamer:
                 streamer.update(frame)
 
+            if args.record:
+                if writer is None:
+                    src_fps = cap.get(cv2.CAP_PROP_FPS)
+                    src_fps = src_fps if 1 <= src_fps <= 120 else 20
+                    h, w = frame.shape[:2]
+                    writer = cv2.VideoWriter(
+                        args.record, cv2.VideoWriter_fourcc(*"mp4v"), src_fps, (w, h))
+                writer.write(frame)
+
             fps_n += 1
             if now - fps_t >= 1.0:
                 fps, fps_n, fps_t = fps_n / (now - fps_t), 0, now
@@ -136,6 +152,9 @@ def main():
         print("\nStopped.")
     finally:
         cap.release()
+        if writer:
+            writer.release()
+            print(f"Saved video: {args.record}")
         if csv_writer:
             csv_file.close()
 
