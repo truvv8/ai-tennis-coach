@@ -47,13 +47,36 @@ It finds strokes by wrist-speed peaks, splits each into backswing / contact / fo
 
 The `match` column is a DTW comparison of the angle trajectories against a reference stroke — record one stroke you're happy with, save its csv, and every session gets scored against it. Stroke #2 above is a collapsed elbow: 96° at contact instead of ~157°, and the shape mismatch shows up in the score. `analyze.py` is pure stdlib and runs anywhere, not just the Jetson.
 
+## Training it on good strokes
+
+One reference stroke works, but a template built from many is much better — it learns not just the ideal trajectory but the natural variation, so it only flags what's actually outside your normal range:
+
+```bash
+# collect sessions where the strokes are good (a coach, your best day, etc.)
+python3 train_reference.py good_day1.csv good_day2.csv coach.csv -o forehand.json
+
+python3 analyze.py session.csv --reference forehand.json
+```
+
+```
+3 strokes detected, template of 12 strokes
+
+ #    time  backswing  follow     elbow  shoulder      knee       hip   match
+ 1     2.6       0.27    0.27     159.9     100.0     131.3     170.0    100%
+ 2     6.8       0.27    0.27      96.4      92.5     131.2     171.6     37%  <- elbow -66 deg vs ref in backswing
+ 3    10.5       0.27    0.27     155.0      95.6     129.2     172.7    100%
+```
+
+With a template it tells you *which* joint deviates, by how much and in which phase — that's the actual coaching part. 20-50 good strokes make a solid template; every stroke in every file you pass gets used.
+
 ## Files
 
 - `main.py` — the main loop: capture, pose, angles, feedback, stream
 - `pose_estimator.py` — trt_pose wrapper, picks the player out of detected people, draws the skeleton
 - `angles.py` — joint angle math
 - `smoothing.py` — EMA filter for keypoints (raw pose output jitters ~±10° on angles)
-- `analyze.py` — offline session analysis: stroke detection, phases, DTW scoring
+- `analyze.py` — offline session analysis: stroke detection, phases, template/DTW scoring
+- `train_reference.py` — builds a reference template from sessions of good strokes
 - `build_engine.py` — one-time pytorch → tensorrt conversion
 - `streamer.py` — the mjpeg server, no dependencies
 - `setup.sh` — full Jetson setup in one script

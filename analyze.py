@@ -11,11 +11,16 @@ Pure stdlib, runs anywhere (no Jetson needed):
 """
 import argparse
 import csv
+import json
 import math
 
 ANGLE_KEYS = ("elbow", "shoulder", "knee", "hip")
 # fraction of the peak wrist speed where a stroke starts/ends
 STROKE_EDGE = 0.15
+# strokes are time-normalized to this many samples for template comparison
+N_SAMPLES = 50
+# degrees; don't trust tiny stds estimated from a handful of reference strokes
+SIGMA_FLOOR = 8.0
 
 
 def load(path):
@@ -71,18 +76,72 @@ def find_strokes(rows, min_gap_s=1.0):
     return strokes
 
 
+def filled_values(rows, start, end, key):
+    """Angle values over a stroke with gaps forward-filled."""
+    vals, prev = [], None
+    for r in rows[start:end + 1]:
+        v = r["angles"][key]
+        if v is None:
+            v = prev if prev is not None else 90.0
+        prev = v
+        vals.append(v)
+    return vals
+
+
+def resample(rows, start, end, key, n=N_SAMPLES):
+    """One joint's trajectory over a stroke, linearly resampled to n points
+    so strokes of different duration are comparable."""
+    vals = filled_values(rows, start, end, key)
+    if len(vals) == 1:
+        return vals * n
+    out = []
+    for i in range(n):
+        pos = i * (len(vals) - 1) / (n - 1)
+        lo = int(pos)
+        hi = min(lo + 1, len(vals) - 1)
+        frac = pos - lo
+        out.append(vals[lo] * (1 - frac) + vals[hi] * frac)
+    return out
+
+
+def phase_name(i, n=N_SAMPLES):
+    if i < 0.4 * n:
+        return "in backswing"
+    if i < 0.6 * n:
+        return "around contact"
+    return "in follow-through"
+
+
+def template_score(rows, start, end, template):
+    """Compare a stroke against a trained template. Returns (score 0-100,
+    note about the worst-deviating joint or '' if within tolerance)."""
+    worst_key, worst_dev, worst_zs, total = None, 0.0, None, 0.0
+    for k in template["keys"]:
+        traj = resample(rows, start, end, k)
+        mu, sd = template[k]["mean"], template[k]["std"]
+        zs = [(t - m) / max(s, SIGMA_FLOOR) for t, m, s in zip(traj, mu, sd)]
+        dev = sum(abs(z) for z in zs) / len(zs)
+        total += dev
+        if dev > worst_dev:
+            worst_key, worst_dev, worst_zs = k, dev, zs
+    mean_dev = total / len(template["keys"])
+    score = 100.0 * math.exp(-max(0.0, mean_dev - 1.0))
+
+    note = ""
+    if worst_dev > 1.0 and worst_zs:
+        peak = max(range(len(worst_zs)), key=lambda i: abs(worst_zs[i]))
+        mu = template[worst_key]["mean"][peak]
+        traj_v = resample(rows, start, end, worst_key)[peak]
+        note = f"{worst_key} {traj_v - mu:+.0f} deg vs ref {phase_name(peak)}"
+    return score, note
+
+
 def angle_series(rows, start, end, keys=("elbow", "knee")):
     """Concatenated angle trajectories over a stroke, gaps forward-filled,
     normalized to [0..1] so joints weigh equally in DTW."""
     series = []
     for k in keys:
-        prev = None
-        for r in rows[start:end + 1]:
-            v = r["angles"][k]
-            if v is None:
-                v = prev if prev is not None else 90.0
-            prev = v
-            series.append(v / 180.0)
+        series.extend(v / 180.0 for v in filled_values(rows, start, end, k))
     return series
 
 
@@ -117,7 +176,8 @@ def main():
     ap = argparse.ArgumentParser(description="Swing analysis of a main.py CSV log")
     ap.add_argument("csv", help="session CSV from main.py --csv")
     ap.add_argument("--reference", default=None,
-                    help="CSV with one good stroke to compare against (DTW)")
+                    help="reference to score against: a .json template from "
+                         "train_reference.py, or a CSV with one good stroke (DTW)")
     args = ap.parse_args()
 
     rows = load(args.csv)
@@ -126,8 +186,11 @@ def main():
         print("No strokes detected — is there a wrist_speed column with real motion?")
         return
 
-    ref_series = None
-    if args.reference:
+    ref_series, template = None, None
+    if args.reference and args.reference.endswith(".json"):
+        with open(args.reference) as f:
+            template = json.load(f)
+    elif args.reference:
         ref_rows = load(args.reference)
         ref_strokes = find_strokes(ref_rows)
         if not ref_strokes:
@@ -140,9 +203,10 @@ def main():
     t0 = rows[0]["t"]
     header = f"{'#':>2}  {'time':>6}  {'backswing':>9}  {'follow':>6}  " \
              + "  ".join(f"{k:>8}" for k in ANGLE_KEYS)
-    if ref_series:
+    if ref_series or template:
         header += f"  {'match':>6}"
-    print(f"{len(strokes)} strokes detected\n")
+    print(f"{len(strokes)} strokes detected"
+          + (f", template of {template['strokes']} strokes" if template else "") + "\n")
     print(header)
     print("(angles at contact, degrees; backswing/follow-through in seconds)")
 
@@ -152,7 +216,12 @@ def main():
                 f"{contact['t'] - rows[start]['t']:9.2f}  "
                 f"{rows[end]['t'] - contact['t']:6.2f}  "
                 + "  ".join(f"{fmt_angle(contact['angles'][k]):>8}" for k in ANGLE_KEYS))
-        if ref_series:
+        if template:
+            score, note = template_score(rows, start, end, template)
+            line += f"  {score:5.0f}%"
+            if note:
+                line += f"  <- {note}"
+        elif ref_series:
             dist = dtw_distance(angle_series(rows, start, end), ref_series)
             line += f"  {similarity_score(dist):5.0f}%"
         print(line)
